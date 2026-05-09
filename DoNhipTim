@@ -1,0 +1,143 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "MAX30100_PulseOximeter.h"
+
+// ===== OLED =====
+Adafruit_SSD1306 display(128, 32, &Wire, -1);
+
+// ===== SENSOR =====
+PulseOximeter pox;
+
+// ===== WIFI AP =====
+const char* ssid = "HeartMonitor_AP";
+const char* password = "12345678";
+
+// ===== SERVER =====
+ESP8266WebServer server(80);
+
+// ===== DATA =====
+float hr_avg = 0;
+float spo2_avg = 0;
+
+unsigned long tsLastReport = 0;
+
+// ================= WEB =================
+String page() {
+  String html = "<!DOCTYPE html><html>";
+  html += "<meta http-equiv='refresh' content='1'>";
+  html += "<body style='text-align:center;font-family:Arial'>";
+
+  html += "<h2>HEART MONITOR</h2>";
+
+  html += "<h3>Heart Rate: ";
+  html += String(hr_avg, 0);
+  html += " BPM</h3>";
+
+  html += "<h3>SpO2: ";
+  html += String(spo2_avg, 0);
+  html += " %</h3>";
+
+  html += "</body></html>";
+  return html;
+}
+
+void handleRoot() {
+  server.send(200, "text/html", page());
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.setClock(100000);
+
+  // ===== WIFI =====
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid, password);
+
+  Serial.println("WiFi AP Started");
+  Serial.println(WiFi.softAPIP());
+
+  // ===== SERVER =====
+  server.on("/", handleRoot);
+  server.begin();
+
+  // ===== OLED =====
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED FAIL");
+  }
+
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println("SYSTEM START");
+  display.display();
+  delay(1500);
+
+  // ===== SENSOR =====
+  if (!pox.begin()) {
+    Serial.println("MAX30100 FAIL");
+  }
+
+  pox.setIRLedCurrent(MAX30100_LED_CURR_7_6MA);
+}
+
+// ================= LOOP =================
+void loop() {
+  server.handleClient();
+  pox.update();
+
+  if (millis() - tsLastReport > 1000) {
+
+    float hr = pox.getHeartRate();
+    float spo2 = pox.getSpO2();
+
+    // ===== DETECT FINGER (FIX) =====
+    bool finger = (hr > 30 && hr < 180) || (spo2 > 80 && spo2 <= 100);
+
+    if (!finger) {
+      hr_avg = 0;
+      spo2_avg = 0;
+    } else {
+
+      // ===== FILTER =====
+      if (hr > 30 && hr < 180) {
+        hr_avg = hr_avg * 0.6 + hr * 0.4;
+      }
+
+      if (spo2 > 80 && spo2 <= 100) {
+        spo2_avg = spo2_avg * 0.6 + spo2 * 0.4;
+      }
+    }
+
+    // ===== SERIAL =====
+    Serial.print("HR: ");
+    Serial.print(hr_avg);
+    Serial.print(" | SpO2: ");
+    Serial.println(spo2_avg);
+
+    // ===== OLED =====
+    display.clearDisplay();
+    display.setCursor(0, 0);
+
+    if (!finger) {
+      display.println("NO FINGER");
+      display.println("PUT FINGER");
+    } else {
+      display.print("HR: ");
+      display.print(hr_avg, 0);
+      display.println(" bpm");
+
+      display.print("SpO2: ");
+      display.print(spo2_avg, 0);
+      display.println(" %");
+    }
+
+    display.display();
+
+    tsLastReport = millis();
+  }
+}
